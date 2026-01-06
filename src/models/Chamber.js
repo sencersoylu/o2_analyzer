@@ -35,7 +35,7 @@ const Chamber = sequelize.define(
 			allowNull: true,
 		},
 		raw100: {
-			type: DataTypes.TEXT,
+			type: DataTypes.INTEGER,
 			allowNull: true,
 		},
 		calibrationDate: {
@@ -51,6 +51,10 @@ const Chamber = sequelize.define(
 			type: DataTypes.DECIMAL(5, 2),
 			allowNull: false,
 			defaultValue: 16.0,
+		},
+		lastRawFromPLC: {
+			type: DataTypes.INTEGER,
+			allowNull: true,
 		},
 		lastSensorChange: {
 			type: DataTypes.DATE,

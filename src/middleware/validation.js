@@ -1,4 +1,5 @@
 const Joi = require('joi');
+const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
 
 // Chamber validation schema
@@ -40,43 +41,10 @@ const chamberSettingsSchema = Joi.object({
 	isCalibrationRequired: Joi.boolean().optional(),
 });
 
-// 3-Point Calibration validation schema
+// 3-Point Calibration validation schema (Updated for automatic PLC-based calibration)
 const threePointCalibrationSchema = Joi.object({
-	zeroPointRaw: Joi.number().required().messages({
-		'any.required': 'Zero point raw value is required',
-		'number.base': 'Zero point raw value must be a number',
-	}),
-	midPointRaw: Joi.number().required().messages({
-		'any.required': 'Mid point raw value is required',
-		'number.base': 'Mid point raw value must be a number',
-	}),
-	hundredPointRaw: Joi.number().required().messages({
-		'any.required': 'Hundred point raw value is required',
-		'number.base': 'Hundred point raw value must be a number',
-	}),
-	midPointCalibrated: Joi.number().min(0).max(100).default(21.0).messages({
-		'number.min': 'Mid point calibrated value must be between 0 and 100',
-		'number.max': 'Mid point calibrated value must be between 0 and 100',
-	}),
 	calibratedBy: Joi.string().optional(),
 	notes: Joi.string().optional(),
-}).custom((value, helpers) => {
-	// Custom validation for calibration points order
-	const { zeroPointRaw, midPointRaw, hundredPointRaw } = value;
-
-	if (zeroPointRaw >= midPointRaw) {
-		return helpers.error('any.invalid', {
-			message: 'Zero point raw value must be less than mid point raw value',
-		});
-	}
-
-	if (midPointRaw >= hundredPointRaw) {
-		return helpers.error('any.invalid', {
-			message: 'Mid point raw value must be less than hundred point raw value',
-		});
-	}
-
-	return value;
 });
 
 // Raw reading calibration validation schema
@@ -189,6 +157,21 @@ const validateCalibration = (req, res, next) => {
 	});
 };
 
+// Express-validator error handling middleware
+const handleValidationErrors = (req, res, next) => {
+	const errors = validationResult(req);
+	if (!errors.isEmpty()) {
+		const firstError = errors.array()[0];
+		logger.warn('Express-validator validation failed:', firstError.msg);
+		return res.status(400).json({
+			success: false,
+			message: firstError.msg,
+			field: firstError.param,
+		});
+	}
+	next();
+};
+
 module.exports = {
 	validateChamber,
 	validateO2Reading,
@@ -198,4 +181,5 @@ module.exports = {
 	validateThreePointCalibration,
 	validateCalibrateReading,
 	validateCalibration, // Legacy
+	handleValidationErrors, // Express-validator support
 };

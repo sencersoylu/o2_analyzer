@@ -1,4 +1,4 @@
-const { ChamberSettings, Chamber, CalibrationPoints } = require('../models');
+const { Chamber } = require('../models');
 const calibrationService = require('../services/calibrationService');
 const logger = require('../utils/logger');
 
@@ -13,23 +13,26 @@ class SettingsController {
 		try {
 			const { id } = req.params;
 
-			const settings = await ChamberSettings.findOne({
-				where: { chamberId: id },
-				include: [
-					{
-						model: Chamber,
-						as: 'chamber',
-						attributes: ['id', 'name', 'description'],
-					},
-				],
-			});
+			const chamber = await Chamber.findByPk(id);
 
-			if (!settings) {
+			if (!chamber) {
 				return res.status(404).json({
 					success: false,
-					message: 'Chamber settings not found',
+					message: 'Chamber not found',
 				});
 			}
+
+			// Chamber modelinden ayarları döndür
+			const settings = {
+				chamberId: chamber.id,
+				alarmLevelHigh: chamber.alarmLevelHigh,
+				alarmLevelLow: chamber.alarmLevelLow,
+				chamber: {
+					id: chamber.id,
+					name: chamber.name,
+					description: chamber.description,
+				},
+			};
 
 			res.json({
 				success: true,
@@ -48,22 +51,14 @@ class SettingsController {
 	async updateChamberSettings(req, res) {
 		try {
 			const { id } = req.params;
-			const {
-				alarmLevelHigh,
-				alarmLevelLow,
-				sensorModel,
-				sensorSerialNumber,
-				isCalibrationRequired,
-			} = req.body;
+			const { alarmLevelHigh, alarmLevelLow } = req.body;
 
-			const settings = await ChamberSettings.findOne({
-				where: { chamberId: id },
-			});
+			const chamber = await Chamber.findByPk(id);
 
-			if (!settings) {
+			if (!chamber) {
 				return res.status(404).json({
 					success: false,
-					message: 'Chamber settings not found',
+					message: 'Chamber not found',
 				});
 			}
 
@@ -77,23 +72,13 @@ class SettingsController {
 				}
 			}
 
-			await settings.update({
+			await chamber.update({
 				alarmLevelHigh:
 					alarmLevelHigh !== undefined
 						? alarmLevelHigh
-						: settings.alarmLevelHigh,
+						: chamber.alarmLevelHigh,
 				alarmLevelLow:
-					alarmLevelLow !== undefined ? alarmLevelLow : settings.alarmLevelLow,
-				sensorModel:
-					sensorModel !== undefined ? sensorModel : settings.sensorModel,
-				sensorSerialNumber:
-					sensorSerialNumber !== undefined
-						? sensorSerialNumber
-						: settings.sensorSerialNumber,
-				isCalibrationRequired:
-					isCalibrationRequired !== undefined
-						? isCalibrationRequired
-						: settings.isCalibrationRequired,
+					alarmLevelLow !== undefined ? alarmLevelLow : chamber.alarmLevelLow,
 			});
 
 			logger.info(`Chamber settings updated for chamber ${id}`);
@@ -101,12 +86,12 @@ class SettingsController {
 			// Broadcast settings update via Socket.IO
 			const socketHandler = getSocketHandler();
 			if (socketHandler) {
-				socketHandler.broadcastSettingsUpdate(id, settings);
+				socketHandler.broadcastSettingsUpdate(id, chamber);
 			}
 
 			res.json({
 				success: true,
-				data: settings,
+				data: chamber,
 				message: 'Settings updated successfully',
 			});
 		} catch (error) {
@@ -122,31 +107,39 @@ class SettingsController {
 	async performThreePointCalibration(req, res) {
 		try {
 			const { id } = req.params;
-			const {
-				zeroPointRaw,
-				midPointRaw,
-				hundredPointRaw,
-				midPointCalibrated = 21.0,
-				calibratedBy,
-				notes,
-			} = req.body;
+			const { calibratedBy, notes } = req.body;
 
-			// Validasyon
-			if (!zeroPointRaw || !midPointRaw || !hundredPointRaw) {
-				return res.status(400).json({
+			// Get chamber data to access lastRawFromPLC
+			const { Chamber } = require('../models');
+			const chamber = await Chamber.findByPk(id);
+
+			if (!chamber) {
+				return res.status(404).json({
 					success: false,
-					message:
-						'All calibration points (zeroPointRaw, midPointRaw, hundredPointRaw) are required',
+					message: 'Chamber not found',
 				});
 			}
 
-			if (zeroPointRaw >= midPointRaw || midPointRaw >= hundredPointRaw) {
+			// Check if we have a recent PLC reading
+			if (!chamber.lastRawFromPLC) {
 				return res.status(400).json({
 					success: false,
 					message:
-						'Calibration points must be in ascending order: zeroPointRaw < midPointRaw < hundredPointRaw',
+						'No recent PLC reading available for this chamber. Please ensure PLC is connected and reading data.',
 				});
 			}
+
+			// Use PLC's last read value as 21%, 0 as 0%, and calculate 100%
+			const plcCurrentValue = chamber.lastRawFromPLC;
+			const zeroPointRaw = 0;
+			const midPointRaw = plcCurrentValue; // PLC'den okunan değer %21 kabul edilir
+			const hundredPointRaw = (plcCurrentValue / 21) * 100; // (PLC den okunan Ham değer/21)*100
+			const midPointCalibrated = 21.0;
+
+			logger.info(`Performing 3-point calibration for chamber ${id}:`);
+			logger.info(`- 0% point: ${zeroPointRaw} (raw)`);
+			logger.info(`- 21% point: ${midPointRaw} (raw) from PLC`);
+			logger.info(`- 100% point: ${hundredPointRaw} (calculated)`);
 
 			const result = await calibrationService.performThreePointCalibration(
 				parseInt(id),
@@ -157,7 +150,7 @@ class SettingsController {
 					midPointCalibrated: parseFloat(midPointCalibrated),
 				},
 				calibratedBy || 'system',
-				notes
+				notes || `Auto-calibration using PLC value ${plcCurrentValue} as 21%`
 			);
 
 			// Broadcast calibration event via Socket.IO

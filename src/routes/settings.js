@@ -27,7 +27,7 @@ router.get(
 router.post('/:id/calibrate-reading', settingsController.calibrateReading);
 
 // Legacy calibration endpoint (for backward compatibility)
-router.post('/:id/calibrate', settingsController.performCalibration);
+router.post('/:id/calibrate', settingsController.performThreePointCalibration);
 
 // Sensor Management
 router.post('/:id/sensor-changed', settingsController.recordSensorChange);

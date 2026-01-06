@@ -17,9 +17,14 @@ const chamberRoutes = require('./routes/chambers');
 const alarmRoutes = require('./routes/alarms');
 const settingsRoutes = require('./routes/settings');
 const analyticsRoutes = require('./routes/analytics');
+const plcRoutes = require('./routes/plc');
 
 // Import Socket.IO handler
 const SocketHandler = require('./sockets/socketHandler');
+
+// Import periodic PLC reader
+const periodicPLCReader = require('./services/periodicPlcReader');
+const periodicDataService = require('./services/periodicDataService');
 
 const app = express();
 const server = http.createServer(app);
@@ -35,6 +40,8 @@ const socketHandler = new SocketHandler(io);
 
 // Make socketHandler available globally
 global.socketHandler = socketHandler;
+
+
 
 // Middleware
 app.use(compression());
@@ -58,14 +65,16 @@ app.get('/health', (req, res) => {
 		uptime: process.uptime(),
 		environment: process.env.NODE_ENV,
 		connectedClients: socketHandler.getConnectedClientsCount(),
+		periodicPlcReader: periodicPLCReader.getStats(),
 	});
 });
 
 // API routes
 app.use('/api/chambers', chamberRoutes);
 app.use('/api/alarms', alarmRoutes);
-app.use('/api/chambers', settingsRoutes); // Settings are nested under chambers
+app.use('/api/settings', settingsRoutes); // Settings routes
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/plc', plcRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -75,7 +84,9 @@ app.get('/', (req, res) => {
 		endpoints: {
 			chambers: '/api/chambers',
 			alarms: '/api/alarms',
+			settings: '/api/settings',
 			analytics: '/api/analytics',
+			plc: '/api/plc',
 			health: '/health',
 		},
 		documentation: 'API documentation available at /docs (if implemented)',
@@ -119,6 +130,21 @@ async function startServer() {
 			logger.info(`Server running on port ${PORT}`);
 			logger.info(`Environment: ${process.env.NODE_ENV}`);
 			logger.info(`Health check: http://localhost:${PORT}/health`);
+
+			// Start periodic PLC reader
+			try {
+				periodicPLCReader.start();
+				logger.info('Periodic PLC reader started successfully');
+			} catch (error) {
+				logger.error('Failed to start periodic PLC reader:', error);
+			}
+
+			// Start periodic chamber data broadcast
+			try {
+				periodicDataService.startBroadcast(socketHandler);
+			} catch (error) {
+				logger.error('Failed to start periodic chamber data broadcast:', error);
+			}
 		});
 	} catch (error) {
 		logger.error('Failed to start server:', error);
@@ -129,6 +155,22 @@ async function startServer() {
 // Graceful shutdown
 process.on('SIGTERM', () => {
 	logger.info('SIGTERM received, shutting down gracefully');
+
+	// Stop periodic PLC reader
+	try {
+		periodicPLCReader.stop();
+		logger.info('Periodic PLC reader stopped');
+	} catch (error) {
+		logger.error('Error stopping periodic PLC reader:', error);
+	}
+
+	// Stop periodic chamber data broadcast
+	try {
+		periodicDataService.stopBroadcast();
+	} catch (error) {
+		logger.error('Error stopping periodic chamber data broadcast:', error);
+	}
+
 	server.close(() => {
 		logger.info('Server closed');
 		sequelize.close();

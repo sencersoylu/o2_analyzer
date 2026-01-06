@@ -56,6 +56,77 @@ class SocketHandler {
 		);
 	}
 
+	// Broadcast new reading from chamber controller (including raw values)
+	broadcastNewReading(chamberId, reading) {
+		this.io.to(`chamber-${chamberId}`).emit('new_reading', {
+			chamberId,
+			reading,
+			timestamp: new Date().toISOString(),
+		});
+
+		// Also broadcast to global room for monitoring
+		this.io.to('global').emit('new_reading', {
+			chamberId,
+			reading,
+			timestamp: new Date().toISOString(),
+		});
+
+		logger.info(
+			`Broadcasted new reading for chamber ${chamberId}: ${
+				reading.o2Level
+			}% (raw: ${reading.rawO2Level || 'N/A'})`
+		);
+	}
+
+	// Broadcast PLC data to all clients
+	broadcastPLCData(plcData) {
+		this.io.to('global').emit('plc-data', {
+			...plcData,
+			timestamp: new Date().toISOString(),
+		});
+		logger.info(`Broadcasted PLC data: ${plcData.data.length} sensors`);
+	}
+
+	// Broadcast chamber-specific sensor data
+	broadcastChamberSensorData(chamberId, sensorData) {
+		this.io.to(`chamber-${chamberId}`).emit('chamber-sensor-data', {
+			chamberId,
+			...sensorData,
+			timestamp: new Date().toISOString(),
+		});
+
+		// Also broadcast to global room
+		this.io.to('global').emit('chamber-sensor-data', {
+			chamberId,
+			...sensorData,
+			timestamp: new Date().toISOString(),
+		});
+
+		logger.info(
+			`Broadcasted sensor data for chamber ${chamberId}: ${sensorData.sensors.length} sensors`
+		);
+	}
+
+	// Broadcast chamber raw value update from periodic PLC reader
+	broadcastChamberRawValue(chamberId, rawValueData) {
+		this.io.to(`chamber-${chamberId}`).emit('chamber-raw-value', {
+			chamberId,
+			...rawValueData,
+			timestamp: new Date().toISOString(),
+		});
+
+		// Also broadcast to global room for monitoring
+		this.io.to('global').emit('chamber-raw-value', {
+			chamberId,
+			...rawValueData,
+			timestamp: new Date().toISOString(),
+		});
+
+		logger.debug(
+			`Broadcasted raw value for chamber ${chamberId}: ${rawValueData.lastRawFromPLC}`
+		);
+	}
+
 	// Broadcast alarm to global room and specific chamber room
 	broadcastAlarm(alarm) {
 		const alarmData = {
@@ -155,6 +226,26 @@ class SocketHandler {
 			...data,
 			timestamp: new Date().toISOString(),
 		});
+	}
+
+	// Broadcast periodic chamber data with calibrated values and settings
+	broadcastPeriodicChamberData(chamberData) {
+		this.io.to('global').emit('periodic-chamber-data', {
+			chambers: chamberData,
+			timestamp: new Date().toISOString(),
+		});
+
+		// Also broadcast to individual chamber rooms
+		chamberData.forEach((chamber) => {
+			this.io.to(`chamber-${chamber.id}`).emit('periodic-chamber-data', {
+				chambers: [chamber],
+				timestamp: new Date().toISOString(),
+			});
+		});
+
+		logger.debug(
+			`Broadcasted periodic chamber data for ${chamberData.length} chambers`
+		);
 	}
 }
 

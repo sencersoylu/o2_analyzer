@@ -265,6 +265,130 @@ class ChamberController {
 		}
 	}
 
+	// Read from PLC and add reading (with automatic calibration)
+	async addReadingFromPLC(req, res) {
+		try {
+			const { id } = req.params;
+			const { sensorIndex } = req.body;
+
+			// Validate chamber exists
+			const chamber = await Chamber.findByPk(id);
+			if (!chamber) {
+				return res.status(404).json({
+					success: false,
+					message: 'Chamber not found',
+				});
+			}
+
+			// Import PLC service
+			const plcService = require('../services/plcService');
+
+			// Read raw value from PLC
+			let rawValue;
+			if (sensorIndex !== undefined) {
+				// Read specific sensor
+				const result = await plcService.readSensorValue(sensorIndex);
+				if (!result.success) {
+					return res.status(500).json({
+						success: false,
+						message: 'Failed to read from PLC',
+						error: result.error,
+					});
+				}
+				rawValue = result.value;
+			} else {
+				// Use default sensor mapping for chamber
+				const sensorMap = { 1: 0, 2: 4 }; // Main: sensor 0, Entry: sensor 4
+				const defaultSensorIndex = sensorMap[id] || 0;
+
+				const result = await plcService.readSensorValue(defaultSensorIndex);
+				if (!result.success) {
+					return res.status(500).json({
+						success: false,
+						message: 'Failed to read from PLC',
+						error: result.error,
+					});
+				}
+				rawValue = result.value;
+			}
+
+			// Convert raw value to O2 percentage (basic linear conversion)
+			// You may need to adjust these conversion parameters
+			const minRaw = 2500;
+			const maxRaw = 16383;
+			const minO2 = 0;
+			const maxO2 = 100;
+
+			let o2Level =
+				((rawValue - minRaw) / (maxRaw - minRaw)) * (maxO2 - minO2) + minO2;
+			o2Level = Math.max(minO2, Math.min(maxO2, o2Level)); // Clamp to valid range
+			o2Level = Math.round(o2Level * 100) / 100; // Round to 2 decimal places
+
+			// Calibrate the O2 reading
+			const calibratedO2Level = await calibrationService.calibrateReading(
+				id,
+				o2Level
+			);
+
+			// Create the reading with calibrated value
+			const reading = await O2Reading.create({
+				chamberId: id,
+				o2Level: calibratedO2Level,
+				temperature: null, // PLC doesn't provide temperature
+				humidity: null, // PLC doesn't provide humidity
+				sensorStatus: 'normal',
+				timestamp: new Date(),
+			});
+
+			// Include chamber info in response
+			const readingWithChamber = await O2Reading.findByPk(reading.id, {
+				include: [
+					{
+						model: Chamber,
+						as: 'chamber',
+						attributes: ['id', 'name'],
+					},
+				],
+			});
+
+			logger.info(
+				`PLC reading added for chamber ${id}: ${calibratedO2Level}% (raw: ${rawValue}, converted: ${o2Level}%)`
+			);
+
+			// Broadcast new reading via Socket.IO
+			const socketHandler = getSocketHandler();
+			if (socketHandler) {
+				socketHandler.broadcastNewReading(id, {
+					...readingWithChamber.toJSON(),
+					rawO2Level: rawValue,
+					convertedO2Level: o2Level,
+				});
+			}
+
+			res.json({
+				success: true,
+				data: {
+					...readingWithChamber.toJSON(),
+					rawO2Level: rawValue,
+					convertedO2Level: o2Level,
+					calibratedO2Level: calibratedO2Level,
+				},
+				message: 'PLC reading added successfully',
+				plcMetadata: {
+					sensorIndex: sensorIndex || 'default',
+					conversionParams: { minRaw, maxRaw, minO2, maxO2 },
+				},
+			});
+		} catch (error) {
+			logger.error('Error adding PLC reading:', error);
+			res.status(500).json({
+				success: false,
+				message: 'Internal server error',
+				error: error.message,
+			});
+		}
+	}
+
 	// Add reading (with automatic calibration)
 	async addReading(req, res) {
 		try {

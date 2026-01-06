@@ -1,9 +1,4 @@
-const {
-	ChamberSettings,
-	CalibrationHistory,
-	CalibrationPoints,
-	Chamber,
-} = require('../models');
+const { Chamber } = require('../models');
 const logger = require('../utils/logger');
 
 class CalibrationService {
@@ -88,15 +83,6 @@ class CalibrationService {
 				midPointCalibrated = 21.0,
 			} = calibrationData;
 
-			// Validasyon
-			if (!zeroPointRaw || !midPointRaw || !hundredPointRaw) {
-				throw new Error('All calibration points are required');
-			}
-
-			if (zeroPointRaw >= midPointRaw || midPointRaw >= hundredPointRaw) {
-				throw new Error('Calibration points must be in ascending order');
-			}
-
 			// Kalibrasyon katsayılarını hesapla
 			const coefficients = this.calculateCalibrationCoefficients(
 				zeroPointRaw,
@@ -105,48 +91,38 @@ class CalibrationService {
 				midPointCalibrated
 			);
 
-			// Önceki aktif kalibrasyonu deaktif et
-			await CalibrationPoints.update(
-				{ isActive: false },
-				{ where: { chamberId, isActive: true } }
-			);
-
-			// Yeni kalibrasyon noktalarını kaydet
-			const calibrationPoints = await CalibrationPoints.create({
-				chamberId,
-				zeroPointRaw,
-				zeroPointCalibrated: 0,
-				midPointRaw,
-				midPointCalibrated,
-				hundredPointRaw,
-				hundredPointCalibrated: 100,
-				calibrationSlope: coefficients.slope,
-				calibrationOffset: coefficients.offset,
-				calibratedBy,
-				notes,
-			});
-
-			// Kalibrasyon geçmişine kaydet
-			await CalibrationHistory.create({
-				chamberId,
-				calibrationLevel: midPointCalibrated,
-				calibratedBy,
-				notes: `3-point calibration: 0%(${zeroPointRaw}) -> ${midPointCalibrated}%(${midPointRaw}) -> 100%(${hundredPointRaw})`,
-			});
-
-			// Chamber settings'i güncelle
-			const settings = await ChamberSettings.findOne({ where: { chamberId } });
-			if (settings) {
-				await settings.update({
-					isCalibrationRequired: false,
-					lastCalibration: new Date(),
-				});
+			// Chamber'ı bul ve kalibrasyon verilerini kaydet
+			const chamber = await Chamber.findByPk(chamberId);
+			if (!chamber) {
+				throw new Error('Chamber not found');
 			}
 
+			// Chamber'daki kalibrasyon alanlarını güncelle
+			await chamber.update({
+				raw0: zeroPointRaw,
+				raw21: midPointRaw,
+				raw100: hundredPointRaw.toString(), // raw100 TEXT field olduğu için string olarak kaydet
+				calibrationDate: new Date(),
+			});
+
 			logger.info(`3-point calibration completed for chamber ${chamberId}`);
+			logger.info(
+				`Calibration points - 0%: ${zeroPointRaw}, 21%: ${midPointRaw}, 100%: ${hundredPointRaw}`
+			);
+			logger.info(
+				`Calibration coefficients - slope: ${coefficients.slope}, offset: ${coefficients.offset}`
+			);
 
 			return {
-				calibrationPoints,
+				chamber: chamber,
+				calibrationData: {
+					zeroPointRaw,
+					zeroPointCalibrated: 0,
+					midPointRaw,
+					midPointCalibrated,
+					hundredPointRaw,
+					hundredPointCalibrated: 100,
+				},
 				coefficients,
 				message: '3-point calibration completed successfully',
 			};
@@ -163,18 +139,27 @@ class CalibrationService {
 	 */
 	async getActiveCalibrationPoints(chamberId) {
 		try {
-			const calibrationPoints = await CalibrationPoints.findOne({
-				where: { chamberId, isActive: true },
-				include: [
-					{
-						model: Chamber,
-						as: 'chamber',
-						attributes: ['id', 'name'],
-					},
-				],
-			});
+			const chamber = await Chamber.findByPk(chamberId);
 
-			return calibrationPoints;
+			if (!chamber || !chamber.calibrationDate) {
+				return null;
+			}
+
+			// Chamber modelinden kalibrasyon noktalarını döndür
+			return {
+				chamberId: chamber.id,
+				zeroPointRaw: chamber.raw0,
+				zeroPointCalibrated: 0,
+				midPointRaw: chamber.raw21,
+				midPointCalibrated: 21.0,
+				hundredPointRaw: parseFloat(chamber.raw100),
+				hundredPointCalibrated: 100,
+				calibrationDate: chamber.calibrationDate,
+				chamber: {
+					id: chamber.id,
+					name: chamber.name,
+				},
+			};
 		} catch (error) {
 			logger.error('Error getting active calibration points:', error);
 			throw error;
@@ -200,10 +185,18 @@ class CalibrationService {
 				return rawValue;
 			}
 
+			// Kalibrasyon katsayılarını yeniden hesapla
+			const coefficients = this.calculateCalibrationCoefficients(
+				calibrationPoints.zeroPointRaw,
+				calibrationPoints.midPointRaw,
+				calibrationPoints.hundredPointRaw,
+				calibrationPoints.midPointCalibrated
+			);
+
 			const calibratedValue = this.applyCalibration(
 				rawValue,
-				calibrationPoints.calibrationSlope,
-				calibrationPoints.calibrationOffset
+				coefficients.slope,
+				coefficients.offset
 			);
 
 			return parseFloat(calibratedValue.toFixed(2));
@@ -221,18 +214,34 @@ class CalibrationService {
 	 */
 	async getCalibrationHistory(chamberId, limit = 50) {
 		try {
-			const history = await CalibrationPoints.findAll({
-				where: { chamberId },
-				order: [['calibrationDate', 'DESC']],
-				limit: parseInt(limit),
-				include: [
-					{
-						model: Chamber,
-						as: 'chamber',
-						attributes: ['id', 'name'],
+			const chamber = await Chamber.findByPk(chamberId);
+
+			if (!chamber) {
+				return [];
+			}
+
+			// Şu anda sadece son kalibrasyon bilgisini döndürüyoruz
+			// Gelecekte kalibrasyon geçmişi için ayrı bir tablo eklenebilir
+			const history = [];
+			if (
+				chamber.calibrationDate &&
+				chamber.raw0 !== null &&
+				chamber.raw21 !== null &&
+				chamber.raw100 !== null
+			) {
+				history.push({
+					id: 1,
+					chamberId: chamber.id,
+					calibrationDate: chamber.calibrationDate,
+					zeroPointRaw: chamber.raw0,
+					midPointRaw: chamber.raw21,
+					hundredPointRaw: parseFloat(chamber.raw100),
+					chamber: {
+						id: chamber.id,
+						name: chamber.name,
 					},
-				],
-			});
+				});
+			}
 
 			return history;
 		} catch (error) {
@@ -251,12 +260,24 @@ class CalibrationService {
 			const calibrationPoints = await this.getActiveCalibrationPoints(
 				chamberId
 			);
-			const settings = await ChamberSettings.findOne({ where: { chamberId } });
+			const chamber = await Chamber.findByPk(chamberId);
+
+			const hasActiveCalibration = !!calibrationPoints;
+			let coefficients = null;
+
+			if (hasActiveCalibration) {
+				coefficients = this.calculateCalibrationCoefficients(
+					calibrationPoints.zeroPointRaw,
+					calibrationPoints.midPointRaw,
+					calibrationPoints.hundredPointRaw,
+					calibrationPoints.midPointCalibrated
+				);
+			}
 
 			return {
-				hasActiveCalibration: !!calibrationPoints,
+				hasActiveCalibration,
 				lastCalibration: calibrationPoints?.calibrationDate || null,
-				isCalibrationRequired: settings?.isCalibrationRequired || false,
+				isCalibrationRequired: false, // Chamber modelinde bu alan yok, varsayılan false
 				calibrationPoints: calibrationPoints
 					? {
 							zeroPoint: {
@@ -272,8 +293,8 @@ class CalibrationService {
 								calibrated: calibrationPoints.hundredPointCalibrated,
 							},
 							coefficients: {
-								slope: calibrationPoints.calibrationSlope,
-								offset: calibrationPoints.calibrationOffset,
+								slope: coefficients?.slope || 0,
+								offset: coefficients?.offset || 0,
 							},
 					  }
 					: null,
@@ -299,22 +320,18 @@ class CalibrationService {
 
 	async recordSensorChange(chamberId, sensorModel, sensorSerialNumber) {
 		try {
-			const settings = await ChamberSettings.findOne({ where: { chamberId } });
+			const chamber = await Chamber.findByPk(chamberId);
 
-			if (!settings) {
-				throw new Error('Chamber settings not found');
+			if (!chamber) {
+				throw new Error('Chamber not found');
 			}
 
-			await settings.update({
-				sensorModel,
-				sensorSerialNumber,
-				isCalibrationRequired: true,
-				lastCalibration: null,
-			});
+			// Chamber modelinde sensor bilgisi yok, sadece log kaydı tutalım
+			logger.info(
+				`Sensor change recorded for chamber ${chamberId}: ${sensorModel} - ${sensorSerialNumber}`
+			);
 
-			logger.info(`Sensor change recorded for chamber ${chamberId}`);
-
-			return settings;
+			return chamber;
 		} catch (error) {
 			logger.error('Error recording sensor change:', error);
 			throw error;
@@ -323,21 +340,17 @@ class CalibrationService {
 
 	async markCalibrationRequired(chamberId, reason = '') {
 		try {
-			const settings = await ChamberSettings.findOne({ where: { chamberId } });
+			const chamber = await Chamber.findByPk(chamberId);
 
-			if (!settings) {
-				throw new Error('Chamber settings not found');
+			if (!chamber) {
+				throw new Error('Chamber not found');
 			}
-
-			await settings.update({
-				isCalibrationRequired: true,
-			});
 
 			logger.info(
 				`Calibration marked as required for chamber ${chamberId}: ${reason}`
 			);
 
-			return settings;
+			return chamber;
 		} catch (error) {
 			logger.error('Error marking calibration required:', error);
 			throw error;
@@ -346,43 +359,31 @@ class CalibrationService {
 
 	async getCalibrationStats(chamberId = null, days = 30) {
 		try {
-			const whereClause = {};
+			const whereClause = { isActive: true };
 			if (chamberId) {
-				whereClause.chamberId = chamberId;
+				whereClause.id = chamberId;
 			}
 
 			const startDate = new Date();
 			startDate.setDate(startDate.getDate() - days);
 
-			const stats = await CalibrationPoints.findAll({
-				where: {
-					...whereClause,
-					calibrationDate: {
-						[require('sequelize').Op.gte]: startDate,
+			const chambers = await Chamber.findAll({
+				where: whereClause,
+			});
+
+			const stats = chambers.map((chamber) => {
+				const hasCalibration =
+					chamber.calibrationDate && chamber.calibrationDate >= startDate;
+
+				return {
+					chamberId: chamber.id,
+					chamber: {
+						id: chamber.id,
+						name: chamber.name,
 					},
-				},
-				attributes: [
-					'chamberId',
-					[
-						require('sequelize').fn('COUNT', require('sequelize').col('id')),
-						'totalCalibrations',
-					],
-					[
-						require('sequelize').fn(
-							'MAX',
-							require('sequelize').col('calibrationDate')
-						),
-						'lastCalibration',
-					],
-				],
-				group: ['chamberId'],
-				include: [
-					{
-						model: Chamber,
-						as: 'chamber',
-						attributes: ['id', 'name'],
-					},
-				],
+					totalCalibrations: hasCalibration ? 1 : 0,
+					lastCalibration: chamber.calibrationDate,
+				};
 			});
 
 			return stats;

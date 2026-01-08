@@ -34,6 +34,7 @@ class PLCService {
 	async openClientConnection() {
 		return new Promise((resolve, reject) => {
 			try {
+				//console.log("openClientConnection");
 				const client = new net.Socket();
 
 				client.connect(this.plcPort, this.plcIP);
@@ -82,6 +83,8 @@ class PLCService {
 								);
 							}
 
+							console.log(this.sensorData)
+
 							logger.debug('Parsed sensor data:', this.sensorData);
 						}
 					} catch (error) {
@@ -129,6 +132,7 @@ class PLCService {
 				throw new Error('PLC operation already in progress');
 			}
 
+			console.log("working readRawValues")
 			this.isWorking = true;
 			const client = await this.openClientConnection();
 
@@ -140,14 +144,14 @@ class PLCService {
 					'1'.charCodeAt(),
 					'4'.charCodeAt(),
 					'6'.charCodeAt(),
-					'1'.charCodeAt(),
-					'3'.charCodeAt(),
+					'0'.charCodeAt(),
+					'2'.charCodeAt(),
 				],
 				'ascii'
 			);
 
 			// Register address R02000
-			const buf2 = Buffer.from('R02000');
+			const buf2 = Buffer.from('R02100');
 			const bufA = Buffer.concat([buf1, buf2], buf1.length + buf2.length);
 
 			// Calculate and append LRC
@@ -204,6 +208,7 @@ class PLCService {
 	 */
 	async readSensorValue(sensorIndex) {
 		try {
+			//console.log("read value")
 			const result = await this.readRawValues();
 
 			if (!result.success) {
@@ -213,9 +218,8 @@ class PLCService {
 			if (sensorIndex < 0 || sensorIndex >= result.data.length) {
 				return {
 					success: false,
-					error: `Invalid sensor index ${sensorIndex}. Available range: 0-${
-						result.data.length - 1
-					}`,
+					error: `Invalid sensor index ${sensorIndex}. Available range: 0-${result.data.length - 1
+						}`,
 					timestamp: new Date().toISOString(),
 				};
 			}
@@ -264,41 +268,87 @@ class PLCService {
 	}
 
 	/**
-	 * Write data to PLC register (for future use)
-	 * @param {string} registerAddress - Register address (e.g., 'R0020')
+	 * Write data to PLC register
+	 * @param {string} registerAddress - Register address (e.g., 'R02001')
 	 * @param {number} value - Value to write
-	 * @returns {Promise<Buffer>} - Command buffer
+	 * @returns {Promise<Object>} - Result of write operation
 	 */
 	async writeData(registerAddress, value) {
-		const buf1 = Buffer.from(
-			[
-				0x02,
-				'0'.charCodeAt(),
-				'1'.charCodeAt(),
-				'4'.charCodeAt(),
-				'7'.charCodeAt(),
-				'0'.charCodeAt(),
-				'1'.charCodeAt(),
-			],
-			'ascii'
-		);
+		try {
+			if (this.demo == 1) {
+				logger.info(`Demo mode: Would write ${value} to ${registerAddress}`);
+				return {
+					success: true,
+					registerAddress,
+					value,
+					timestamp: new Date().toISOString(),
+				};
+			}
 
-		const buf2 = Buffer.from(registerAddress, 'ascii');
-		const buf3 = Buffer.from(this.d2h(parseInt(value)).toUpperCase(), 'ascii');
+			// Wait if another operation is in progress
+			while (this.isWorking) {
+				await new Promise(resolve => setTimeout(resolve, 50));
+			}
 
-		const bufA = Buffer.concat(
-			[buf1, buf2, buf3],
-			buf1.length + buf2.length + buf3.length
-		);
+			this.isWorking = true;
 
-		const LRC = this.calculateLRC(bufA);
-		const bufB = Buffer.concat([
-			bufA,
-			Buffer.from([LRC[0].charCodeAt(), LRC[1].charCodeAt(), 0x03]),
-		]);
+			const buf1 = Buffer.from(
+				[
+					0x02,
+					'0'.charCodeAt(),
+					'1'.charCodeAt(),
+					'4'.charCodeAt(),
+					'7'.charCodeAt(),
+					'0'.charCodeAt(),
+					'1'.charCodeAt(),
+				],
+				'ascii'
+			);
 
-		logger.debug('Write data buffer:', bufB);
-		return bufB;
+			const buf2 = Buffer.from(registerAddress, 'ascii');
+			const buf3 = Buffer.from(this.d2h(parseInt(value)).toUpperCase(), 'ascii');
+
+			const bufA = Buffer.concat(
+				[buf1, buf2, buf3],
+				buf1.length + buf2.length + buf3.length
+			);
+
+			const LRC = this.calculateLRC(bufA);
+			const bufB = Buffer.concat([
+				bufA,
+				Buffer.from([LRC[0].charCodeAt(), LRC[1].charCodeAt(), 0x03]),
+			]);
+
+			logger.debug('Write data buffer:', bufB);
+
+			// Open connection and send data
+			const client = await this.openClientConnection();
+			await client.write(bufB);
+
+			// Wait a bit for the write to complete
+			await new Promise(resolve => setTimeout(resolve, 100));
+			client.destroy();
+
+			this.isWorking = false;
+
+			logger.info(`Wrote ${value} to PLC register ${registerAddress}`);
+			return {
+				success: true,
+				registerAddress,
+				value,
+				timestamp: new Date().toISOString(),
+			};
+		} catch (error) {
+			this.isWorking = false;
+			logger.error(`Error writing to PLC register ${registerAddress}:`, error);
+			return {
+				success: false,
+				registerAddress,
+				value,
+				error: error.message,
+				timestamp: new Date().toISOString(),
+			};
+		}
 	}
 }
 

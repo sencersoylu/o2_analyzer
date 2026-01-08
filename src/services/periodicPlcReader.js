@@ -1,12 +1,14 @@
 const plcService = require('./plcService');
-const { Chamber } = require('../models');
+const { Chamber, O2Reading } = require('../models');
+const calibrationService = require('./calibrationService');
 const logger = require('../utils/logger');
+const externalSocketClient = require('./externalSocketClient');
 
 class PeriodicPLCReader {
 	constructor() {
 		this.intervalId = null;
 		this.isRunning = false;
-		this.interval = 500; // 500ms interval as requested
+		this.interval = 1000; // 500ms interval as requested
 		this.lastReadAttempt = null;
 		this.successfulReads = 0;
 		this.failedReads = 0;
@@ -66,6 +68,7 @@ class PeriodicPLCReader {
 
 			// Read raw values from PLC
 			const plcResult = await plcService.readRawValues(2); // Read 19 sensor values
+			//console.log("result" , plcResult)
 
 			if (!plcResult.success) {
 				this.failedReads++;
@@ -83,7 +86,7 @@ class PeriodicPLCReader {
 				},
 			});
 
-			// Update each chamber with its corresponding raw value
+			// Update each chamber with its corresponding raw value and create reading
 			const updatePromises = chambers.map(async (chamber) => {
 				try {
 					const sensorIndex = this.chamberSensorMapping[chamber.id];
@@ -96,13 +99,61 @@ class PeriodicPLCReader {
 							lastRawFromPLC: rawValue,
 						});
 
+						// Convert raw value to O2 percentage (basic linear conversion)
+
+
+						// Calibrate the O2 reading
+						const calibratedO2Level = await calibrationService.calibrateReading(
+							chamber.id,
+							rawValue
+						);
+
+						console.log("calibratedO2Level", chamber.id, rawValue, calibratedO2Level)
+
+						// Write calibrated value to PLC (multiplied by 10, e.g., 21.0 -> 210)
+						const plcWriteValue = Math.round(calibratedO2Level * 10);
+						let writeRegister = null;
+
+						if (chamber.id === 1) {
+							// Main chamber -> R02001
+							writeRegister = 'R02001';
+						} else if (chamber.id === 2) {
+							// Antechamber -> R02005
+							writeRegister = 'R02005';
+						}
+
+						if (writeRegister) {
+							plcService.writeData(writeRegister, plcWriteValue)
+								.then(result => {
+									if (result.success) {
+										logger.debug(`Wrote calibrated O2 ${plcWriteValue} to ${writeRegister} for chamber ${chamber.id}`);
+									} else {
+										logger.error(`Failed to write to ${writeRegister}: ${result.error}`);
+									}
+								})
+								.catch(err => {
+									logger.error(`Error writing to PLC ${writeRegister}:`, err);
+								});
+						}
+
+						// Create O2Reading record in database
+						const reading = await O2Reading.create({
+							chamberId: chamber.id,
+							o2Level: calibratedO2Level,
+							temperature: null, // PLC doesn't provide temperature
+							humidity: null, // PLC doesn't provide humidity
+							sensorStatus: 'normal',
+							timestamp: new Date(),
+						});
+
 						logger.debug(
-							`Updated chamber ${chamber.id} (${chamber.name}) lastRawFromPLC: ${rawValue}`
+							`Updated chamber ${chamber.id} (${chamber.name}) - Raw: ${rawValue}, O2: ${calibratedO2Level}%, Reading ID: ${reading.id}`
 						);
 
 						// Broadcast the update via Socket.IO if available
 						const socketHandler = global.socketHandler;
 						if (socketHandler) {
+							// Broadcast raw value update
 							socketHandler.broadcastChamberRawValue(chamber.id, {
 								chamberId: chamber.id,
 								chamberName: chamber.name,
@@ -110,7 +161,17 @@ class PeriodicPLCReader {
 								sensorIndex: sensorIndex,
 								timestamp: new Date().toISOString(),
 							});
+
+							// Broadcast new reading
+							socketHandler.broadcastNewReading(chamber.id, {
+								...reading.toJSON(),
+								rawO2Level: rawValue,
+								convertedO2Level: calibratedO2Level,
+							});
 						}
+
+						// Emit to external socket server (192.168.77.100:4000)
+						externalSocketClient.emitO2Level(chamber.id, calibratedO2Level, rawValue);
 					} else {
 						logger.debug(
 							`No sensor mapping found for chamber ${chamber.id} or sensor data unavailable`
@@ -149,10 +210,10 @@ class PeriodicPLCReader {
 			successRate:
 				this.successfulReads + this.failedReads > 0
 					? (
-							(this.successfulReads /
-								(this.successfulReads + this.failedReads)) *
-							100
-					  ).toFixed(2) + '%'
+						(this.successfulReads /
+							(this.successfulReads + this.failedReads)) *
+						100
+					).toFixed(2) + '%'
 					: '0%',
 			chamberSensorMapping: this.chamberSensorMapping,
 		};

@@ -107,7 +107,7 @@ class SettingsController {
 	async performThreePointCalibration(req, res) {
 		try {
 			const { id } = req.params;
-			const { calibratedBy, notes } = req.body;
+			const { calibratedBy, notes, calibrationLevel } = req.body;
 
 			// Get chamber data to access lastRawFromPLC
 			const { Chamber } = require('../models');
@@ -129,16 +129,26 @@ class SettingsController {
 				});
 			}
 
-			// Use PLC's last read value as 21%, 0 as 0%, and calculate 100%
+			// Use calibrationLevel from request body, default to 21 if not provided
+			const midPointCalibrated = calibrationLevel !== undefined ? parseFloat(calibrationLevel) : 21.0;
+
+			// Validate calibration level
+			if (midPointCalibrated <= 0 || midPointCalibrated >= 100) {
+				return res.status(400).json({
+					success: false,
+					message: 'calibrationLevel must be between 0 and 100 (exclusive)',
+				});
+			}
+
+			// Use PLC's last read value as the calibration point, 0 as 0%, and calculate 100%
 			const plcCurrentValue = chamber.lastRawFromPLC;
 			const zeroPointRaw = 0;
-			const midPointRaw = plcCurrentValue; // PLC'den okunan değer %21 kabul edilir
-			const hundredPointRaw = (plcCurrentValue / 21) * 100; // (PLC den okunan Ham değer/21)*100
-			const midPointCalibrated = 21.0;
+			const midPointRaw = plcCurrentValue; // PLC'den okunan değer, gönderilen calibrationLevel'a karşılık gelir
+			const hundredPointRaw = (plcCurrentValue / midPointCalibrated) * 100; // (PLC den okunan Ham değer / calibrationLevel) * 100
 
 			logger.info(`Performing 3-point calibration for chamber ${id}:`);
 			logger.info(`- 0% point: ${zeroPointRaw} (raw)`);
-			logger.info(`- 21% point: ${midPointRaw} (raw) from PLC`);
+			logger.info(`- ${midPointCalibrated}% point: ${midPointRaw} (raw) from PLC`);
 			logger.info(`- 100% point: ${hundredPointRaw} (calculated)`);
 
 			const result = await calibrationService.performThreePointCalibration(
@@ -150,7 +160,7 @@ class SettingsController {
 					midPointCalibrated: parseFloat(midPointCalibrated),
 				},
 				calibratedBy || 'system',
-				notes || `Auto-calibration using PLC value ${plcCurrentValue} as 21%`
+				notes || `Auto-calibration using PLC value ${plcCurrentValue} as ${midPointCalibrated}%`
 			);
 
 			// Broadcast calibration event via Socket.IO

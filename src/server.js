@@ -25,6 +25,7 @@ const SocketHandler = require('./sockets/socketHandler');
 // Import periodic PLC reader
 const periodicPLCReader = require('./services/periodicPlcReader');
 const periodicDataService = require('./services/periodicDataService');
+const externalSocketClient = require('./services/externalSocketClient');
 
 const app = express();
 const server = http.createServer(app);
@@ -121,8 +122,8 @@ async function startServer() {
 		// Test database connection
 		await testConnection();
 
-		// Sync database models
-		await sequelize.sync({ alter: true });
+		// Sync database models (not using alter to avoid SQLite migration issues)
+		await sequelize.sync();
 		logger.info('Database synchronized successfully');
 
 		// Start server
@@ -144,6 +145,13 @@ async function startServer() {
 				periodicDataService.startBroadcast(socketHandler);
 			} catch (error) {
 				logger.error('Failed to start periodic chamber data broadcast:', error);
+			}
+
+			// Connect to external socket server (192.168.77.100:4000)
+			try {
+				externalSocketClient.connect();
+			} catch (error) {
+				logger.error('Failed to connect to external socket server:', error);
 			}
 		});
 	} catch (error) {
@@ -169,6 +177,14 @@ process.on('SIGTERM', () => {
 		periodicDataService.stopBroadcast();
 	} catch (error) {
 		logger.error('Error stopping periodic chamber data broadcast:', error);
+	}
+
+	// Disconnect from external socket server
+	try {
+		externalSocketClient.disconnect();
+		logger.info('External socket client disconnected');
+	} catch (error) {
+		logger.error('Error disconnecting external socket client:', error);
 	}
 
 	server.close(() => {

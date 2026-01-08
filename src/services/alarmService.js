@@ -7,6 +7,25 @@ const getSocketHandler = () => {
 	return global.socketHandler;
 };
 
+// Get PLC alarm register based on chamber ID
+const getAlarmRegister = (chamberId) => {
+	// Ana Kabin (main): M00407, Ara Kabin (intermediate): M00408
+	if (chamberId === 1) return 'M00407';
+	if (chamberId === 2) return 'M00408';
+	return null;
+};
+
+// Send writeBit command to PLC for alarm state
+const sendAlarmToPLC = (chamberId, value) => {
+	const socketHandler = getSocketHandler();
+	const register = getAlarmRegister(chamberId);
+	
+	if (socketHandler && register) {
+		socketHandler.io.emit('writeBit', { register, value });
+		logger.info(`PLC writeBit sent: register=${register}, value=${value}`);
+	}
+};
+
 class AlarmService {
 	// Check for new alarms based on O2 reading
 	async checkForAlarms(chamberId, o2Level, sensorStatus) {
@@ -49,6 +68,9 @@ class AlarmService {
 					if (socketHandler) {
 						socketHandler.broadcastAlarm(alarm);
 					}
+					
+					// Send alarm signal to PLC
+					sendAlarmToPLC(chamberId, 1);
 				}
 			}
 
@@ -79,6 +101,9 @@ class AlarmService {
 					if (socketHandler) {
 						socketHandler.broadcastAlarm(alarm);
 					}
+					
+					// Send alarm signal to PLC
+					sendAlarmToPLC(chamberId, 1);
 				}
 			}
 
@@ -179,6 +204,9 @@ class AlarmService {
 					if (socketHandler) {
 						socketHandler.broadcastAlarmResolved(alarm);
 					}
+					
+					// Send resolve signal to PLC (value: 0)
+					sendAlarmToPLC(chamberId, 0);
 				}
 			}
 
@@ -205,6 +233,9 @@ class AlarmService {
 					if (socketHandler) {
 						socketHandler.broadcastAlarmResolved(alarm);
 					}
+					
+					// Send resolve signal to PLC (value: 0)
+					sendAlarmToPLC(chamberId, 0);
 				}
 			}
 
@@ -327,6 +358,9 @@ class AlarmService {
 				mutedUntil: mutedUntil || moment().add(1, 'hour').toDate(),
 			});
 
+			// Send mute signal to PLC (value: 0)
+			sendAlarmToPLC(alarm.chamberId, 0);
+
 			logger.info(`Alarm ${alarmId} muted until ${mutedUntil}`);
 			return alarm;
 		} catch (error) {
@@ -347,6 +381,9 @@ class AlarmService {
 				isActive: false,
 				resolvedAt: new Date(),
 			});
+
+			// Send resolve signal to PLC (value: 0)
+			sendAlarmToPLC(alarm.chamberId, 0);
 
 			logger.info(`Alarm ${alarmId} manually resolved`);
 			return alarm;

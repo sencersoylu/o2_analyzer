@@ -10,6 +10,7 @@ const logger = require('../utils/logger');
 const { Chamber, O2Reading } = require('../models');
 const calibrationService = require('./calibrationService');
 const alarmService = require('./alarmService');
+const plcService = require('./plcService');
 
 // Name-to-Chamber mapping (populated on first data event)
 const NAME_TO_CHAMBER_CACHE = {};
@@ -137,6 +138,32 @@ class ModbusSocketClient {
                     chamber.id,
                     rawValue
                 );
+
+                // Write calibrated value to PLC for main and ante chambers
+                if (chamber.type === 'chamber') {
+                    const plcWriteValue = Math.round(calibratedO2Level * 10);
+                    let writeRegister = null;
+
+                    if (chamber.id === 1) {
+                        writeRegister = 'R02001';
+                    } else if (chamber.id === 2) {
+                        writeRegister = 'R02005';
+                    }
+
+                    if (writeRegister) {
+                        plcService.writeData(writeRegister, plcWriteValue)
+                            .then(result => {
+                                if (result.success) {
+                                    logger.debug(`Wrote calibrated O2 ${plcWriteValue} to ${writeRegister} for chamber ${chamber.id}`);
+                                } else {
+                                    logger.error(`Failed to write to ${writeRegister}: ${result.error}`);
+                                }
+                            })
+                            .catch(err => {
+                                logger.error(`Error writing to PLC ${writeRegister}:`, err);
+                            });
+                    }
+                }
 
                 // Skip O2Reading if no calibration exists (raw value returned as-is, exceeds 0-100 range)
                 if (calibratedO2Level < 0 || calibratedO2Level > 100) {

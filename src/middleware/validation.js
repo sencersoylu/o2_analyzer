@@ -45,6 +45,7 @@ const chamberSettingsSchema = Joi.object({
 const threePointCalibrationSchema = Joi.object({
 	calibratedBy: Joi.string().optional(),
 	notes: Joi.string().optional(),
+	calibrationLevel: Joi.number().min(0).max(100).optional(),
 });
 
 // Raw reading calibration validation schema

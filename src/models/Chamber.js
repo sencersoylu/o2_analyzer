@@ -18,6 +18,14 @@ const Chamber = sequelize.define(
 				len: [1, 100],
 			},
 		},
+		type: {
+			type: DataTypes.STRING,
+			allowNull: false,
+			defaultValue: 'chamber',
+			validate: {
+				isIn: [['chamber', 'fio']],
+			},
+		},
 		description: {
 			type: DataTypes.TEXT,
 			allowNull: true,
@@ -53,7 +61,7 @@ const Chamber = sequelize.define(
 			defaultValue: 16.0,
 		},
 		lastRawFromPLC: {
-			type: DataTypes.INTEGER,
+			type: DataTypes.FLOAT,
 			allowNull: true,
 		},
 		lastSensorChange: {

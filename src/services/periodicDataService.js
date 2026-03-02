@@ -55,6 +55,7 @@ class PeriodicDataService {
 					return {
 						id: chamber.id,
 						name: chamber.name,
+						type: chamber.type || 'chamber',
 						description: chamber.description,
 						isActive: chamber.isActive,
 						// Güncel kalibre edilmiş değer
@@ -72,8 +73,8 @@ class PeriodicDataService {
 									timestamp: latestReading.timestamp,
 							  }
 							: null,
-						// Alarm ayarları
-						alarmSettings: {
+						// Alarm ayarları (FIO sensörleri için null)
+						alarmSettings: (chamber.type || 'chamber') === 'fio' ? null : {
 							alarmLevelHigh: chamber.alarmLevelHigh,
 							alarmLevelLow: chamber.alarmLevelLow,
 						},
@@ -101,12 +102,13 @@ class PeriodicDataService {
 					return {
 						id: chamber.id,
 						name: chamber.name,
+						type: chamber.type || 'chamber',
 						description: chamber.description,
 						isActive: chamber.isActive,
 						error: 'Data collection failed',
 						currentCalibratedValue: null,
 						latestReading: null,
-						alarmSettings: {
+						alarmSettings: (chamber.type || 'chamber') === 'fio' ? null : {
 							alarmLevelHigh: chamber.alarmLevelHigh,
 							alarmLevelLow: chamber.alarmLevelLow,
 						},

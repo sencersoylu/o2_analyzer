@@ -1,4 +1,4 @@
-const { Alarm, Chamber, ChamberSettings } = require('../models');
+const { Alarm, Chamber } = require('../models');
 const logger = require('../utils/logger');
 const moment = require('moment');
 
@@ -21,7 +21,7 @@ const sendAlarmToPLC = (chamberId, value) => {
 	const register = getAlarmRegister(chamberId);
 	
 	if (socketHandler && register) {
-		socketHandler.io.emit('writeBit', { register, value });
+		socketHandler.io.emit('writeBit', { register, value }); 
 		logger.info(`PLC writeBit sent: register=${register}, value=${value}`);
 	}
 };
@@ -30,9 +30,7 @@ class AlarmService {
 	// Check for new alarms based on O2 reading
 	async checkForAlarms(chamberId, o2Level, sensorStatus) {
 		try {
-			const settings = await ChamberSettings.findOne({
-				where: { chamberId },
-			});
+			const settings = await Chamber.findByPk(chamberId);
 
 			if (!settings) {
 				logger.warn(`No settings found for chamber ${chamberId}`);
@@ -173,9 +171,7 @@ class AlarmService {
 	// Resolve alarms when conditions return to normal
 	async resolveAlarms(chamberId, o2Level, sensorStatus) {
 		try {
-			const settings = await ChamberSettings.findOne({
-				where: { chamberId },
-			});
+			const settings = await Chamber.findByPk(chamberId);
 
 			if (!settings) return;
 

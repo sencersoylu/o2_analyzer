@@ -26,6 +26,9 @@ const SocketHandler = require('./sockets/socketHandler');
 const periodicPLCReader = require('./services/periodicPlcReader');
 const periodicDataService = require('./services/periodicDataService');
 const externalSocketClient = require('./services/externalSocketClient');
+const modbusSocketClient = require('./services/modbusSocketClient');
+
+const DATA_SOURCE = (process.env.DATA_SOURCE || 'plc').toLowerCase();
 
 const app = express();
 const server = http.createServer(app);
@@ -122,9 +125,44 @@ async function startServer() {
 		// Test database connection
 		await testConnection();
 
-		// Sync database models (not using alter to avoid SQLite migration issues)
+		// Sync database models
 		await sequelize.sync();
 		logger.info('Database synchronized successfully');
+
+		// SQLite migrations
+		const Chamber = require('./models/Chamber');
+		try {
+			const tableInfo = await sequelize.getQueryInterface().describeTable('chambers');
+			// Add 'type' column if it doesn't exist
+			if (!tableInfo.type) {
+				await sequelize.getQueryInterface().addColumn('chambers', 'type', {
+					type: require('sequelize').DataTypes.STRING,
+					allowNull: false,
+					defaultValue: 'chamber',
+				});
+				logger.info('Added "type" column to chambers table');
+			}
+			// Fix lastRawFromPLC column: INTEGER → REAL for decimal Modbus values
+			if (tableInfo.last_raw_from_p_l_c && tableInfo.last_raw_from_p_l_c.type === 'INTEGER') {
+				await sequelize.query('ALTER TABLE chambers RENAME COLUMN last_raw_from_p_l_c TO last_raw_from_p_l_c_old');
+				await sequelize.query('ALTER TABLE chambers ADD COLUMN last_raw_from_p_l_c REAL');
+				await sequelize.query('UPDATE chambers SET last_raw_from_p_l_c = NULL');
+				await sequelize.query('ALTER TABLE chambers DROP COLUMN last_raw_from_p_l_c_old');
+				logger.info('Migrated lastRawFromPLC column from INTEGER to REAL');
+			}
+		} catch (err) {
+			logger.warn('Migration warning:', err.message);
+		}
+
+		// Create FIO sensor records if they don't exist
+		const fioSensors = ['fio1', 'fio2', 'fio3', 'fio4', 'fio5'];
+		for (const name of fioSensors) {
+			await Chamber.findOrCreate({
+				where: { name },
+				defaults: { name, type: 'fio' },
+			});
+		}
+		logger.info('FIO sensor records ensured in database');
 
 		// Start server
 		server.listen(PORT, () => {
@@ -132,26 +170,42 @@ async function startServer() {
 			logger.info(`Environment: ${process.env.NODE_ENV}`);
 			logger.info(`Health check: http://localhost:${PORT}/health`);
 
-			// Start periodic PLC reader
-			try {
-				periodicPLCReader.start();
-				logger.info('Periodic PLC reader started successfully');
-			} catch (error) {
-				logger.error('Failed to start periodic PLC reader:', error);
-			}
+			logger.info(`Data source mode: ${DATA_SOURCE}`);
 
-			// Start periodic chamber data broadcast
-			try {
-				periodicDataService.startBroadcast(socketHandler);
-			} catch (error) {
-				logger.error('Failed to start periodic chamber data broadcast:', error);
-			}
+			if (DATA_SOURCE === 'tcpmodbus') {
+				// tcpmodbus mode: connect to Modbus TCP bridge server
+				try {
+					modbusSocketClient.connect();
+					logger.info('Modbus socket client started successfully');
+				} catch (error) {
+					logger.error('Failed to start Modbus socket client:', error);
+				}
 
-			// Connect to external socket server (192.168.77.100:4000)
-			try {
-				externalSocketClient.connect();
-			} catch (error) {
-				logger.error('Failed to connect to external socket server:', error);
+				try {
+					periodicDataService.startBroadcast(socketHandler);
+				} catch (error) {
+					logger.error('Failed to start periodic chamber data broadcast:', error);
+				}
+			} else {
+				// plc mode (default): start PLC reader + periodic data + external socket
+				try {
+					periodicPLCReader.start();
+					logger.info('Periodic PLC reader started successfully');
+				} catch (error) {
+					logger.error('Failed to start periodic PLC reader:', error);
+				}
+
+				try {
+					periodicDataService.startBroadcast(socketHandler);
+				} catch (error) {
+					logger.error('Failed to start periodic chamber data broadcast:', error);
+				}
+
+				try {
+					externalSocketClient.connect();
+				} catch (error) {
+					logger.error('Failed to connect to external socket server:', error);
+				}
 			}
 		});
 	} catch (error) {
@@ -164,27 +218,39 @@ async function startServer() {
 process.on('SIGTERM', () => {
 	logger.info('SIGTERM received, shutting down gracefully');
 
-	// Stop periodic PLC reader
-	try {
-		periodicPLCReader.stop();
-		logger.info('Periodic PLC reader stopped');
-	} catch (error) {
-		logger.error('Error stopping periodic PLC reader:', error);
-	}
+	if (DATA_SOURCE === 'tcpmodbus') {
+		try {
+			modbusSocketClient.disconnect();
+			logger.info('Modbus socket client disconnected');
+		} catch (error) {
+			logger.error('Error disconnecting Modbus socket client:', error);
+		}
 
-	// Stop periodic chamber data broadcast
-	try {
-		periodicDataService.stopBroadcast();
-	} catch (error) {
-		logger.error('Error stopping periodic chamber data broadcast:', error);
-	}
+		try {
+			periodicDataService.stopBroadcast();
+		} catch (error) {
+			logger.error('Error stopping periodic chamber data broadcast:', error);
+		}
+	} else {
+		try {
+			periodicPLCReader.stop();
+			logger.info('Periodic PLC reader stopped');
+		} catch (error) {
+			logger.error('Error stopping periodic PLC reader:', error);
+		}
 
-	// Disconnect from external socket server
-	try {
-		externalSocketClient.disconnect();
-		logger.info('External socket client disconnected');
-	} catch (error) {
-		logger.error('Error disconnecting external socket client:', error);
+		try {
+			periodicDataService.stopBroadcast();
+		} catch (error) {
+			logger.error('Error stopping periodic chamber data broadcast:', error);
+		}
+
+		try {
+			externalSocketClient.disconnect();
+			logger.info('External socket client disconnected');
+		} catch (error) {
+			logger.error('Error disconnecting external socket client:', error);
+		}
 	}
 
 	server.close(() => {

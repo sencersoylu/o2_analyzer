@@ -139,30 +139,22 @@ class ModbusSocketClient {
                     rawValue
                 );
 
-                // Write calibrated value to PLC for main and ante chambers
-                if (chamber.type === 'chamber') {
-                    const plcWriteValue = Math.round(calibratedO2Level * 10);
-                    let writeRegister = null;
+                // Write calibrated value to PLC for chambers and FIO sensors
+                const plcWriteValue = Math.round(calibratedO2Level * 10);
+                const writeRegister = this.getWriteRegister(chamber);
 
-                    if (chamber.id === 1) {
-                        writeRegister = 'R02001';
-                    } else if (chamber.id === 2) {
-                        writeRegister = 'R02005';
-                    }
-
-                    if (writeRegister) {
-                        plcService.writeData(writeRegister, plcWriteValue)
-                            .then(result => {
-                                if (result.success) {
-                                    logger.debug(`Wrote calibrated O2 ${plcWriteValue} to ${writeRegister} for chamber ${chamber.id}`);
-                                } else {
-                                    logger.error(`Failed to write to ${writeRegister}: ${result.error}`);
-                                }
-                            })
-                            .catch(err => {
-                                logger.error(`Error writing to PLC ${writeRegister}:`, err);
-                            });
-                    }
+                if (writeRegister) {
+                    plcService.writeData(writeRegister, plcWriteValue)
+                        .then(result => {
+                            if (result.success) {
+                                logger.debug(`Wrote calibrated O2 ${plcWriteValue} to ${writeRegister} for ${name}`);
+                            } else {
+                                logger.error(`Failed to write to ${writeRegister}: ${result.error}`);
+                            }
+                        })
+                        .catch(err => {
+                            logger.error(`Error writing to PLC ${writeRegister}:`, err);
+                        });
                 }
 
                 // Skip O2Reading if no calibration exists (raw value returned as-is, exceeds 0-100 range)
@@ -216,6 +208,30 @@ class ModbusSocketClient {
                 logger.error(`Error processing modbus entry ${entry?.name}:`, error);
             }
         }
+    }
+
+    /**
+     * Get PLC write register for a chamber/sensor.
+     * Chambers: main=R02001, ante=R02005
+     * FIO sensors: fio1=R02020, fio2=R02021, fio3=R02022, fio4=R02023, fio5=R02024
+     */
+    getWriteRegister(chamber) {
+        const normalizedName = chamber.name.toLowerCase();
+
+        // Chamber registers
+        if (normalizedName === 'main') return 'R02001';
+        if (normalizedName === 'ante') return 'R02005';
+
+        // FIO sensor registers: fio1=R02020, fio2=R02021, ...
+        const fioMatch = normalizedName.match(/^fio(\d+)$/);
+        if (fioMatch) {
+            const fioNum = parseInt(fioMatch[1]);
+            if (fioNum >= 1 && fioNum <= 5) {
+                return `R0202${fioNum - 1}`;
+            }
+        }
+
+        return null;
     }
 
     /**

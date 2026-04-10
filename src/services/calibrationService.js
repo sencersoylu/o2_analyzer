@@ -326,11 +326,14 @@ class CalibrationService {
 				throw new Error('Chamber not found');
 			}
 
-			// Chamber modelinde sensor bilgisi yok, sadece log kaydı tutalım
+			// Update lastSensorChange date
+			await chamber.update({ lastSensorChange: new Date() });
+
 			logger.info(
 				`Sensor change recorded for chamber ${chamberId}: ${sensorModel} - ${sensorSerialNumber}`
 			);
 
+			await chamber.reload();
 			return chamber;
 		} catch (error) {
 			logger.error('Error recording sensor change:', error);
